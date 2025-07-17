@@ -57,8 +57,44 @@ jobs:
       - name: Stop containers
         run: docker compose down
 
-      - name: SonarQube Scan
+      - name: Setup SonarCloud Project
         if: github.repository != 'appvia-demos/backstage-wayfinder-todo-app-with-rds-template'
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+        run: |
+          # Extract project key and organization from sonar-project.properties
+          PROJECT_KEY=$(grep "sonar.projectKey=" sonar-project.properties | cut -d'=' -f2)
+          SONAR_ORG=$(grep "sonar.organization=" sonar-project.properties | cut -d'=' -f2)
+          PROJECT_NAME=$(grep "sonar.projectName=" sonar-project.properties | cut -d'=' -f2)
+          
+          # Check if project exists
+          PROJECT_EXISTS=$(curl -s -u "${SONAR_TOKEN}:" \
+            "https://sonarcloud.io/api/projects/search?organization=${SONAR_ORG}&projects=${PROJECT_KEY}" \
+            | jq -r '.paging.total // 0')
+          
+          if [ "$PROJECT_EXISTS" -eq 0 ]; then
+            echo "Creating SonarCloud project..."
+            response=$(curl -s -X POST "https://sonarcloud.io/api/projects/create" \
+              -u "${SONAR_TOKEN}:" \
+              -d "name=${PROJECT_NAME}" \
+              -d "project=${PROJECT_KEY}" \
+              -d "organization=${SONAR_ORG}" \
+              -d "visibility=public")
+            
+            if echo "$response" | jq -e '.errors' > /dev/null; then
+              echo "Error creating project: $response"
+              # Don't fail the workflow, just skip SonarCloud scanning
+              echo "SKIP_SONAR=true" >> $GITHUB_ENV
+            else
+              echo "Project created successfully"
+              echo "$response" | jq .
+            fi
+          else
+            echo "SonarCloud project already exists"
+          fi
+
+      - name: SonarQube Scan
+        if: github.repository != 'appvia-demos/backstage-wayfinder-todo-app-with-rds-template' && env.SKIP_SONAR != 'true'
         uses: SonarSource/sonarqube-scan-action@v3
         with:
           projectBaseDir: .
